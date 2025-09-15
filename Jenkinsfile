@@ -1,57 +1,57 @@
 pipeline {
   agent any
 
-  // Helpful defaults
+  // Safe, built-in options only
   options {
     timestamps()
-    ansiColor('xterm')
   }
 
-  // Auto-build when main changes (use githubPush() if you configured a webhook)
-  triggers {
-    pollSCM('H/5 * * * *')   // every ~5 min; remove if using a webhook
-    // githubPush()          // uncomment if you set up the GitHub webhook
-  }
-
+  // Build + deploy settings
   environment {
-    // Ensure dotnet is on PATH for the Jenkins service
+    // Make sure Jenkins service can find dotnet
     DOTNET_ROOT = 'C:\\Program Files\\dotnet'
     PATH = "${DOTNET_ROOT};${env.PATH}"
 
-    // Your web project (avoid solution-level publish warnings)
+    // Your web project (publish this csproj to avoid solution-level warnings)
     PROJECT_PATH = '.\\webapp\\webapp.csproj'
 
-    // SMB share to deploy to
+    // SMB deploy target
     SHARE_HOST = '135.148.26.116'
     SHARE_NAME = 'coreapp'
 
-    // Jenkins credential ID holding the remote *Windows* admin account
+    // Jenkins credential ID for the *remote* Windows admin (e.g., SERVERNAME\Administrator)
     SHARE_CRED = 'win-share-coreapp-admin'
   }
+
+  // Enable this if you want auto-builds without a webhook
+  // triggers { pollSCM('H/5 * * * *') }
 
   stages {
     stage('Checkout') {
       steps {
-        cleanWs()
+        // built-in cleanup (no plugin needed)
+        deleteDir()
         checkout scm
       }
     }
 
     stage('Restore') {
       steps {
+        // restore from repo root (works with solution or single project)
         bat 'dotnet restore'
       }
     }
 
     stage('Build') {
       steps {
+        // build (fast) — no-restore since we already restored
         bat 'dotnet build -c Release --no-restore'
       }
     }
 
     stage('Test') {
       steps {
-        // Only run tests if a *Tests.csproj exists (prevents false failures)
+        // Run tests only if any *Tests.csproj exists to avoid false failures
         powershell '''
           $tests = Get-ChildItem -Recurse -Filter *Tests.csproj | Select-Object -First 1
           if ($tests) {
@@ -66,7 +66,8 @@ pipeline {
 
     stage('Publish') {
       steps {
-        bat 'dotnet publish %PROJECT_PATH% -c Release -o .\\publish --no-build'
+        // publish the *project* (no solution-level /o warning)
+        bat 'dotnet publish "%PROJECT_PATH%" -c Release -o .\\publish --no-build'
         archiveArtifacts artifacts: 'publish/**', fingerprint: true, onlyIfSuccessful: true
       }
     }
@@ -80,10 +81,10 @@ pipeline {
 
           set "UNC=\\\\%SHARE_HOST%\\%SHARE_NAME%"
 
-          rem ---- 0) Drop any existing connections to that server (avoid cached creds / 1219) ----
+          rem ---- 0) Drop any existing connections to that server (ignore errors) ----
           for /f "tokens=1,2" %%i in ('net use ^| find "\\\\%SHARE_HOST%"') do net use %%j /delete /y >nul 2>&1
 
-          rem ---- 1) Map with the remote Administrator creds ----
+          rem ---- 1) Map with the remote Windows creds (e.g., SERVERNAME\\Administrator) ----
           net use %UNC% %WINPASS% /user:%WINUSER% /persistent:no
           if errorlevel 1 (
             echo ERROR: Failed to authenticate as %WINUSER% on %UNC%
@@ -107,7 +108,7 @@ pipeline {
 
   post {
     success {
-      echo '✅ Build, test, publish, and deploy completed successfully.'
+      echo '✅ Build, publish, and deploy completed successfully.'
     }
     failure {
       echo '❌ Pipeline failed. Check the stage logs above.'
