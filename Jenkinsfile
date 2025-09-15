@@ -44,24 +44,35 @@ pipeline {
         }
         stage('Deploy') {
           steps {
-            withCredentials([usernamePassword(credentialsId: 'win-share-coreapp', usernameVariable: 'SHARE_USER', passwordVariable: 'SHARE_PASS')]) {
-              bat """
+            withCredentials([usernamePassword(credentialsId: 'win-share-coreapp-admin', usernameVariable: 'WINUSER', passwordVariable: 'WINPASS')]) {
+              bat '''
               @echo off
-              rem Drop any old session to the share
+              setlocal EnableExtensions
+        
+              rem ---- 0) Drop any existing connections to that server (avoid cached creds / 1219) ----
+              for /f "tokens=1,2" %%i in ('net use ^| find "\\\\135.148.26.116"') do net use %%j /delete /y >nul 2>&1
+        
+              rem ---- 1) Map with the remote Administrator creds ----
+              net use \\\\135.148.26.116\\coreapp %WINPASS% /user:%WINUSER% /persistent:no
+              if errorlevel 1 (
+                echo ERROR: Failed to authenticate as %WINUSER% on \\\\135.148.26.116\\coreapp
+                exit /b 1
+              )
+        
+              rem ---- 2) Copy artifacts (treat Robocopy codes <8 as success) ----
+              robocopy .\\publish \\\\135.148.26.116\\coreapp /MIR /NFL /NDL /NP
+              set RC=%ERRORLEVEL%
+              if %RC% LSS 8 ( set RC=0 )
+        
+              rem ---- 3) Disconnect cleanly ----
               net use \\\\135.148.26.116\\coreapp /delete /y >nul 2>&1
         
-              rem Connect with proper creds
-              net use \\\\135.148.26.116\\coreapp %SHARE_PASS% /user:%SHARE_USER% /persistent:no
-        
-              rem Copy published output (mirror keeps it clean)
-              robocopy .\\publish \\\\135.148.26.116\\coreapp /MIR
-        
-              rem Disconnect
-              net use \\\\135.148.26.116\\coreapp /delete /y
-              """
+              exit /b %RC%
+              '''
             }
           }
         }
+
     }
 
     post {
